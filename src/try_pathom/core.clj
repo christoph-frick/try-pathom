@@ -3,27 +3,27 @@
             [com.wsscode.pathom.connect :as pc]
             [com.wsscode.pathom.core :as p]))
 
-(pc/defresolver person-resolver [env {:keys [person/id] :as params}]
-  {::pc/input #{:person/id}
-   ::pc/output [:person/first-name :person/last-name {:person/address [:address/id]}]}
-  {:person/first-name "Tom"
-   :person/last-name "Harris"
-   :person/address {:address/id 1}})
+; fake: this should optimize to fetch a batch
+(defn db-lookup [db id-key params]
+  (if (sequential? params)
+    (mapv #(db-lookup db id-key %) params)
+    (get db (get params id-key))))
 
-(pc/defresolver person-full-name-resolver [env {:person/keys [first-name last-name] :as params}]
-  {::pc/input #{:person/first-name :person/last-name}
-   ::pc/output [:person/full-name]}
-  {:person/full-name (str first-name " " last-name)})
+(pc/defresolver brand-resolver [{:keys [:brand/db] :as env} params]
+  {::pc/input #{:brand/id}
+   ::pc/output [:brand/name]
+   ::pc/batch? true}
+  (db-lookup db :brand/id params))
 
-(pc/defresolver address-resolver [env {:keys [address/id] :as params}]
-  {::pc/input #{:address/id}
-   ::pc/output [:address/city :address/state]}
-  {:address/city "Salem"
-   :address/state "MA"})
+(pc/defresolver product-resolver [{:keys [:product/db] :as env} params]
+  {::pc/input #{:product/id}
+   ::pc/output [:product/name :brand/id]
+   ::pc/batch? true}
+  (db-lookup db :product/id params))
 
-(def my-resolvers [person-resolver 
-                   person-full-name-resolver
-                   address-resolver])
+(pc/defresolver cart-resolver [env _]
+  {::pc/output [{::cart [:product/id :cart/amount]}]}
+  (select-keys env [::cart]))
 
 (def parser
   (p/parser
@@ -33,8 +33,18 @@
                          p/env-placeholder-reader]
              ::p/placeholder-prefixes #{">"}}
     ::p/mutate pc/mutate
-    ::p/plugins [(pc/connect-plugin {::pc/register my-resolvers})
+    ::p/plugins [(pc/connect-plugin {::pc/register [brand-resolver
+                                                    product-resolver
+                                                    cart-resolver]})
                  p/error-handler-plugin
                  p/trace-plugin]}))
 
-#_(parser {} [{[:person/id 1] [:person/full-name {:person/address [:address/city]}]}])
+#_(parser {::p/fail-fast? true
+         :brand/db {1 {:brand/name "Riegele"}}
+         :product/db {1 {:product/name "Augustus" :brand/id 1}
+                      2 {:product/name "Noctus" :brand/id 1}
+                      3 {:product/name "Auris" :brand/id 1}}
+         ::cart [{:cart/amount 1 :product/id 1}
+                 {:cart/amount 4 :product/id 2}
+                 {:cart/amount 3 :product/id 3}]}
+        [{::cart [:product/name :brand/name :cart/amount]}])
